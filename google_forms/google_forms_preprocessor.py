@@ -141,10 +141,37 @@ class GoogleFormsPreprocessor(google_drive.BaseGooglePreprocessor):
             return header
         return None
 
+    def get_meta_description(self, soup):
+       """Get the top-level description of the form.
+
+       This is a bit tricky, because sometimes we need to parse the
+       content as HTML, but in some cases, this causes problems: If
+       there's an HTML link in the text, Google Forms will try to wrap
+       any URL-like text in an <a> tag, which means we'll get a nested
+       <a> tag that doesn't parse correctly.
+
+       For example, text like this:
+
+       `Check out <a href="https://www.foo.com">this site</a>`
+
+       Will be transformed into:
+
+       `Check out <a href="<a href="https://www.foo.com">https://www.foo.com</a>>this site</a>`
+
+       In those cases, we need to parse the content as text instead of
+       as HTML.
+
+       """
+       description_as_html = self.get_html(soup, 'freebirdFormviewerViewHeaderDescription')
+       should_be_text = '<a href="<a href' in description_as_html
+       if should_be_text:
+           return self.get_text(soup, 'freebirdFormviewerViewHeaderDescription')
+       return description_as_html
+
     def parse_form(self, soup):
         msg = Form()
         msg.title = self.get_text(soup, 'freebirdFormviewerViewHeaderTitle')
-        msg.description = self.get_html(soup, 'freebirdFormviewerViewHeaderDescription')
+        msg.description = self.get_meta_description(soup)
         msg.action = GoogleFormsPreprocessor.ACTION_URL.format(self.config.id)
         msg.items = []
         items = soup.findAll('div', {'class': 'freebirdFormviewerViewItemsItemItem'})
