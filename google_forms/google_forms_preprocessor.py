@@ -8,6 +8,7 @@ import grow
 import io
 import json
 import os
+import re
 import requests
 
 
@@ -21,6 +22,12 @@ TRANSLATABLE_KEYS = (
 
 SIGN_IN_PAGE_SENTINEL = \
     '<title>Google Forms - create and analyze surveys, for free.</title>'
+
+
+def nl2br(value):
+    _paragraph_re = re.compile(r'(?:\r\n|\r(?!\n)|\n){2,}')
+    return u'\n\n'.join(u'<p>%s</p>' % p.replace(u'\n', '<br>\n')
+                        for p in _paragraph_re.split(value))
 
 
 class Error(Exception):
@@ -131,42 +138,42 @@ class GoogleFormsPreprocessor(google_drive.BaseGooglePreprocessor):
 
     def get_header(self, soup):
         header = Header()
-        title = soup.find('div', {'class': 'freebirdFormviewerViewItemsSectionheaderBannerText'})
+        title = soup.find('div', {'class': 'freebirdFormviewerViewItemsSectionheaderTitle'})
         if title:
             header.title = title.text
         body = soup.find('div', {'class': 'freebirdFormviewerViewItemsSectionheaderDescriptionText'})
         if body:
-            header.body = body.text
+            header.body = body.decode_contents()
         if header.title or header.body:
             return header
         return None
 
-    def get_meta_description(self, soup):
-       """Get the top-level description of the form.
-
-       This is a bit tricky, because sometimes we need to parse the
-       content as HTML, but in some cases, this causes problems: If
-       there's an HTML link in the text, Google Forms will try to wrap
-       any URL-like text in an <a> tag, which means we'll get a nested
-       <a> tag that doesn't parse correctly.
-
-       For example, text like this:
-
-       `Check out <a href="https://www.foo.com">this site</a>`
-
-       Will be transformed into:
-
-       `Check out <a href="<a href="https://www.foo.com">https://www.foo.com</a>>this site</a>`
-
-       In those cases, we need to parse the content as text instead of
-       as HTML.
-
-       """
-       description_as_html = self.get_html(soup, 'freebirdFormviewerViewHeaderDescription')
-       should_be_text = '<a href="<a href' in description_as_html
-       if should_be_text:
-           return self.get_text(soup, 'freebirdFormviewerViewHeaderDescription')
-       return description_as_html
+     def get_meta_description(self, soup):
+        """Get the top-level description of the form.
+ 
+        This is a bit tricky, because sometimes we need to parse the
+        content as HTML, but in some cases, this causes problems: If
+        there's an HTML link in the text, Google Forms will try to wrap
+        any URL-like text in an <a> tag, which means we'll get a nested
+        <a> tag that doesn't parse correctly.
+ 
+        For example, text like this:
+ 
+        `Check out <a href="https://www.foo.com">this site</a>`
+ 
+        Will be transformed into:
+ 
+        `Check out <a href="<a href="https://www.foo.com">https://www.foo.com</a>>this site</a>`
+ 
+        In those cases, we need to parse the content as text instead of
+        as HTML.
+ 
+        """
+        description_as_html = self.get_html(soup, 'freebirdFormviewerViewHeaderDescription')
+        should_be_text = '<a href="<a href' in description_as_html
+        if should_be_text:
+            return self.get_text(soup, 'freebirdFormviewerViewHeaderDescription')
+        return description_as_html
 
     def parse_form(self, soup):
         msg = Form()
@@ -174,11 +181,11 @@ class GoogleFormsPreprocessor(google_drive.BaseGooglePreprocessor):
         msg.description = self.get_meta_description(soup)
         msg.action = GoogleFormsPreprocessor.ACTION_URL.format(self.config.id)
         msg.items = []
-        items = soup.findAll('div', {'class': 'freebirdFormviewerViewItemsItemItem'})
+        items = soup.findAll('div', {'class': 'freebirdFormviewerViewNumberedItemContainer'})
         for item in items:
             item_msg = Item()
-            item_msg.required = bool(item.find('span', {'class': 'freebirdFormviewerViewItemsItemRequiredAsterisk'}))
-            item_msg.label = self.get_text(item, 'freebirdFormviewerViewItemsItemItemTitle')
+            item_msg.required = bool(item.find('span', {'class': 'freebirdFormviewerComponentsQuestionBaseRequiredAsterisk'}))
+            item_msg.label = self.get_text(item, 'exportItemTitle')
             # Strip * from label if required.
             if item_msg.required and item_msg.label.endswith(' *'):
                 item_msg.label = item_msg.label[:-2]
@@ -186,33 +193,36 @@ class GoogleFormsPreprocessor(google_drive.BaseGooglePreprocessor):
             item_msg.header = self.get_header(item)
             item_msg.fields = []
 
-            grid_rows = item.findAll('div', {'class': 'freebirdFormviewerViewItemsGridRow freebirdFormviewerViewItemsGridUngraded'})
+            hidden_inputs = item.findAll('input', {'type': 'hidden'})
+
+            grid_rows = item.findAll('div', {'class': 'freebirdFormviewerComponentsQuestionGridRow'})
             if grid_rows:
-                header = item.find('div', {'class': 'freebirdFormviewerViewItemsGridColumnHeader'})
-                input_values = [field.text for field in header.findAll('div', {'class': 'freebirdFormviewerViewItemsGridCell'})]
-                hidden_inputs = item.findAll('input', {'type': 'hidden'})
+                header = item.find('div', {'class': 'freebirdFormviewerComponentsQuestionGridColumnHeader'})
+                input_values = [field.text for field in header.findAll('div', {'class': 'freebirdFormviewerComponentsQuestionGridCell'})]
                 item_msg.grid = []
                 for i, row in enumerate(grid_rows):
-                    label = row.find('div', {'class': 'freebirdFormviewerViewItemsGridRowHeader'})
-                    choices = row.findAll('div', {'class': 'freebirdFormviewerViewItemsGridCell'})
+                    label = row.find('div', {'class': 'freebirdFormviewerComponentsQuestionGridRowHeader'})
+                    choices = row.findAll('div', {'class': 'freebirdFormviewerComponentsQuestionGridCell'})
                     grid_row = GridRow()
                     grid_row.fields = []
                     grid_row.label = label.text
                     for n, choice in enumerate(choices):
                         field_msg = Field()
                         field_msg.field_type = FieldType.RADIO
-                        field_msg.name = hidden_inputs[i].get('name')
+                        # field_msg.name = hidden_inputs[i].get('name')
                         field_msg.value = input_values[n]
                         # Skip empty values.
                         if field_msg.value:
                             grid_row.fields.append(field_msg)
-                    item_msg.grid.append(grid_row)
+                    # Only add rows with labels.
+                    if grid_row.label:
+                        item_msg.grid.append(grid_row)
 
-            checkboxes = item.findAll('div', {'class': 'freebirdFormviewerViewItemsCheckboxChoice'})
+            checkboxes = item.findAll('div', {'class': 'freebirdFormviewerComponentsQuestionCheckboxChoice'})
             for checkbox in checkboxes:
                 field_msg = Field()
                 field_msg.field_type = FieldType.CHECKBOX
-                field_msg.name = checkbox.parent.find_all('input')[-1].get('name')
+                field_msg.name = checkbox.parent.parent.find_all('input')[-1].get('name')
                 value = self.get_choice_value(checkbox)
                 field_msg.value = value
                 item_msg.fields.append(field_msg)
@@ -224,14 +234,14 @@ class GoogleFormsPreprocessor(google_drive.BaseGooglePreprocessor):
                 value = scale.text
                 field_msg.value = value
                 item_msg.fields.append(field_msg)
-            radios = item.findAll('label', {'class': 'freebirdFormviewerViewItemsRadioChoice'})
+            radios = item.findAll('div', {'class': 'freebirdFormviewerComponentsQuestionRadioChoice'})
             for radio in radios:
                 field_msg = Field()
                 field_msg.field_type = FieldType.RADIO
                 # Use findAll[-1] to retrieve the last input, which is the
                 # actual one. TODO: Add support for other option response with
                 # element name="entry.588393791.other_option_response".
-                field_msg.name = radio.parent.parent.parent.parent.parent.parent.parent.findAll('input')[-1].get('name')
+                field_msg.name = radio.parent.parent.parent.parent.parent.parent.findAll('input')[-1].get('name')
                 value = self.get_choice_value(radio)
                 field_msg.value = value
                 item_msg.fields.append(field_msg)
@@ -242,12 +252,12 @@ class GoogleFormsPreprocessor(google_drive.BaseGooglePreprocessor):
                 field_msg.placeholder = self.get_placeholder(text, class_name='quantumWizTextinputPapertextareaPlaceholder')
                 field_msg.name = text.find('textarea').get('name')
                 item_msg.fields.append(field_msg)
-            texts = item.findAll('div', {'class': 'freebirdFormviewerViewItemsTextItemWrapper'})
+            texts = item.findAll('div', {'class': 'freebirdFormviewerComponentsQuestionTextRoot'})
             for text in texts:
                 field_msg = Field()
                 field_msg.field_type = FieldType.TEXT
                 field_msg.placeholder = self.get_placeholder(text)
-                field_msg.name = text.find('input').get('name')
+                field_msg.name = text.find('input') and text.find('input').get('name')
                 item_msg.fields.append(field_msg)
             msg.items.append(item_msg)
         return msg
