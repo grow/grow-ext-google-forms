@@ -108,7 +108,7 @@ class GoogleFormsPreprocessor(google_drive.BaseGooglePreprocessor):
 
     def tag_keys_for_translation(self, data):
         def visit(path, key, value):
-            if not isinstance(key, basestring) or not value:
+            if not isinstance(key, str) or not value:
                 return key, value
             key = '{}@'.format(key) if key in TRANSLATABLE_KEYS else key
             return key, value
@@ -118,7 +118,7 @@ class GoogleFormsPreprocessor(google_drive.BaseGooglePreprocessor):
         el = soup.find('div', {'class': class_name})
         if not el:
             return
-        return ''.join([unicode(part) for part in el.contents])
+        return ''.join([str(part) for part in el.contents])
 
     def get_text(self, soup, class_name):
         el = soup.find('div', {'class': class_name})
